@@ -1139,29 +1139,37 @@ async function initiateCall(type) {
         document.getElementById('call-status').textContent = 'Calling...';
         
         // Safety check before calling
-        if (!peer) {
-            console.error('❌ PeerJS not initialized');
-            throw new Error('PeerJS not initialized. Please refresh and try again.');
-        }
-        
-        // Verify peer connection is actually open
-        if (!peer.open) {
-            console.warn('⚠️ Peer connection not open yet. Waiting...');
-            document.getElementById('call-status').textContent = 'Establishing connection...';
-            // Wait for peer to be ready
-            await new Promise((resolve) => {
-                const checkInterval = setInterval(() => {
-                    if (peer.open) {
+        // If peer is not initialized, allow calling with fallback ID only
+        if (!peer || !peer.open) {
+            console.warn('⚠️ PeerJS not available. Attempting with fallback mode...');
+            document.getElementById('call-status').textContent = 'Connecting to network...';
+            
+            // Wait a bit for peer to potentially connect
+            if (peer) {
+                await new Promise((resolve) => {
+                    const checkInterval = setInterval(() => {
+                        if (peer.open) {
+                            clearInterval(checkInterval);
+                            resolve();
+                        }
+                    }, 100);
+                    // Timeout after 3 seconds
+                    setTimeout(() => {
                         clearInterval(checkInterval);
                         resolve();
-                    }
-                }, 100);
-                // Timeout after 5 seconds
-                setTimeout(() => {
-                    clearInterval(checkInterval);
-                    resolve();
-                }, 5000);
-            });
+                    }, 3000);
+                });
+            } else {
+                // No peer object at all - wait a bit
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
+        }
+        
+        // Final check - can we actually make a call?
+        if (!peer || typeof peer.call !== 'function') {
+            console.warn('⚠️ PeerJS call not available - showing fallback message');
+            alert('⚠️ Peer connection is not yet established.\n\nPlease refresh the page and try again.\n\nMake sure both users have their Peer IDs visible.');
+            throw new Error('Cannot make call - PeerJS not ready');
         }
         
         console.log('📞 Calling:', remotePeerId);
@@ -1902,13 +1910,16 @@ copyPeerIdBtn.addEventListener('click', () => {
         alert('⏳ Peer ID is still initializing. Please wait a moment and try again.');
     }
 });
-retryPermissionBtn.addEventListener('click', () => {
-    hidePermissionError();
-    if (pendingCallType) {
-        console.log('Retrying call with type:', pendingCallType);
-        initiateCall(pendingCallType);
-    }
-});
+// retryPermissionBtn removed - using simple alerts instead
+// if (retryPermissionBtn) {
+//     retryPermissionBtn.addEventListener('click', () => {
+//         hidePermissionError();
+//         if (pendingCallType) {
+//             console.log('Retrying call with type:', pendingCallType);
+//             initiateCall(pendingCallType);
+//         }
+//     });
+// }
 giphyBtn.addEventListener('click', () => {
     giphyModal.style.display = 'flex';
     searchGifs('');
