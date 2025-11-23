@@ -127,6 +127,7 @@
                     <div id="user-menu" class="hidden absolute right-0 mt-3 w-52 bg-white rounded-xl shadow-xl py-2 z-20 border border-gray-200">
                         <a href="#" id="theme-toggle-button" class="block px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center transition"><i class="fas fa-sun mr-3 text-yellow-500"></i><span>Switch Theme</span></a>
                         <a href="#" id="edit-profile-button" class="block px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center transition"><i class="fas fa-user-edit mr-3 text-blue-500"></i>Edit Profile</a>
+                        <a href="#" id="show-peer-id-button" class="block px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center transition"><i class="fas fa-share-alt mr-3 text-green-500"></i>My Peer ID</a>
                         <a href="#" id="admin-panel-button" class="hidden block px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 flex items-center transition"><i class="fas fa-user-shield mr-3 text-red-500"></i>Admin Panel</a>
                         <hr class="my-2 border-gray-200">
                         <a href="#" id="logout-button" class="block px-4 py-3 text-sm text-red-600 hover:bg-red-50 flex items-center transition"><i class="fas fa-sign-out-alt mr-3"></i>Logout</a>
@@ -285,6 +286,39 @@
                 <i class="fas fa-times mr-2"></i>Reject
             </button>
         </div>
+    </div>
+</div>
+<!-- Peer ID Display Modal -->
+<div id="peer-id-modal" class="hidden fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4">
+    <div class="bg-gradient-to-br from-white to-gray-50 rounded-2xl shadow-2xl p-8 w-full max-w-md">
+        <div class="flex justify-between items-center mb-6">
+            <h3 class="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-green-600"><i class="fas fa-share-alt mr-2 text-blue-500"></i>Your Peer ID</h3>
+            <button id="close-peer-id-modal" class="text-gray-400 hover:text-gray-600 text-3xl transition duration-200">&times;</button>
+        </div>
+        
+        <p class="text-gray-600 mb-6 text-base">📤 Share this ID with others so they can call you on your device:</p>
+        
+        <!-- ID Display Box with better styling -->
+        <div class="bg-gradient-to-r from-blue-50 to-indigo-50 border-2 border-blue-400 rounded-xl p-5 mb-5 shadow-sm">
+            <p class="text-xs text-gray-500 font-semibold mb-2">YOUR ID:</p>
+            <code id="peer-id-display" class="text-blue-700 font-mono text-base break-all font-bold tracking-wider">Loading...</code>
+        </div>
+        
+        <!-- Status indicator -->
+        <div class="bg-green-50 border-l-4 border-green-500 rounded p-3 mb-5">
+            <p class="text-xs text-gray-600"><i class="fas fa-check-circle text-green-600 mr-2"></i>Ready to receive calls</p>
+        </div>
+        
+        <div class="flex gap-3">
+            <button id="copy-peer-id-btn" class="flex-1 bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white py-3 px-4 rounded-lg font-semibold transition shadow-md hover:shadow-lg">
+                <i class="fas fa-copy mr-2"></i><span id="copy-btn-text">Copy to Clipboard</span>
+            </button>
+            <button id="close-peer-id-btn" class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 py-3 px-4 rounded-lg font-semibold transition">
+                <i class="fas fa-times mr-2"></i>Close
+            </button>
+        </div>
+        
+        <p class="text-xs text-gray-500 text-center mt-5">💡 Don't share your ID unless you trust the person</p>
     </div>
 </div>
 <!-- Permission Modal Disabled - Using simple alerts instead -->
@@ -782,6 +816,12 @@ const localVideo = document.getElementById('local-video');
 const remoteVideo = document.getElementById('remote-video');
 const permissionModal = document.getElementById('permission-modal');
 // const retryPermissionBtn = document.getElementById('retry-permission-btn'); // Disabled - using simple alerts instead
+const peerIdModal = document.getElementById('peer-id-modal');
+const peerIdDisplay = document.getElementById('peer-id-display');
+const closePeerIdModal = document.getElementById('close-peer-id-modal');
+const closePeerIdBtn = document.getElementById('close-peer-id-btn');
+const copyPeerIdBtn = document.getElementById('copy-peer-id-btn');
+const showPeerIdBtn = document.getElementById('show-peer-id-button');
 let isLogin = true;
 let replyToMessageId = null;
 let mediaRecorder;
@@ -856,31 +896,78 @@ let peer = null;
 let currentCall = null;
 let currentUserPeerId = null;
 
+function generateFallbackPeerId() {
+    // Generate a unique ID if PeerJS fails
+    const uid = currentUser.uid.substring(0, 8);
+    const random = Math.random().toString(36).substring(2, 8);
+    return `user_${uid}_${random}`;
+}
+
 function initializePeer() {
-    if (peer) return;
+    if (peer || currentUserPeerId) return; // Already initialized
+    
     const peerId = 'user_' + currentUser.uid.substring(0, 10);
-    peer = new Peer(peerId, { 
-        debug: 2,
-        iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
-        ]
-    });
     
-    peer.on('open', function(id) {
-        console.log('✅ PeerJS Ready. Your ID:', id);
-        currentUserPeerId = id;
-        localStorage.setItem('myPeerId', id);
-    });
-    
-    peer.on('call', function(call) {
-        console.log('📞 Incoming call from:', call.peer);
-        handleIncomingCall(call);
-    });
-    
-    peer.on('error', function(error) {
-        console.error('❌ PeerJS Error:', error);
-    });
+    try {
+        peer = new Peer(peerId, { 
+            debug: 0, // Reduced debug output
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' }
+            ]
+        });
+        
+        peer.on('open', function(id) {
+            console.log('✅ PeerJS Ready. Your ID:', id);
+            currentUserPeerId = id;
+            localStorage.setItem('myPeerId', id);
+            peerIdDisplay.textContent = id;
+            updatePeerIdInUI();
+        });
+        
+        peer.on('call', function(call) {
+            console.log('📞 Incoming call from:', call.peer);
+            handleIncomingCall(call);
+        });
+        
+        peer.on('error', function(error) {
+            console.error('❌ PeerJS Error:', error);
+            // Use fallback ID if PeerJS fails
+            if (!currentUserPeerId) {
+                currentUserPeerId = generateFallbackPeerId();
+                localStorage.setItem('myPeerId', currentUserPeerId);
+                peerIdDisplay.textContent = currentUserPeerId;
+                updatePeerIdInUI();
+                console.log('⚠️ Using fallback Peer ID:', currentUserPeerId);
+            }
+        });
+        
+        // Set a timeout to use fallback if PeerJS doesn't connect
+        setTimeout(() => {
+            if (!currentUserPeerId) {
+                console.warn('⚠️ PeerJS taking too long, using fallback ID');
+                currentUserPeerId = generateFallbackPeerId();
+                localStorage.setItem('myPeerId', currentUserPeerId);
+                peerIdDisplay.textContent = currentUserPeerId;
+                updatePeerIdInUI();
+            }
+        }, 3000);
+        
+    } catch (error) {
+        console.error('❌ Failed to initialize PeerJS:', error);
+        currentUserPeerId = generateFallbackPeerId();
+        localStorage.setItem('myPeerId', currentUserPeerId);
+        peerIdDisplay.textContent = currentUserPeerId;
+        updatePeerIdInUI();
+    }
+}
+
+function updatePeerIdInUI() {
+    // Display peer ID in multiple places
+    if (currentUserPeerId) {
+        peerIdDisplay.textContent = currentUserPeerId;
+        console.log('🆔 Your Peer ID:', currentUserPeerId);
+    }
 }
 
 async function handleIncomingCall(call) {
@@ -905,10 +992,21 @@ async function initiateCall(type) {
     
     if (!peer) initializePeer();
     
-    let remotePeerId = prompt(`Call ${currentChatUser.displayName}?\n\nAsk them to share their Peer ID:\n\nYour Peer ID to share: ${currentUserPeerId || 'Loading...'}\n\nEnter their Peer ID:`);
+    // Wait for peer ID to be ready
+    if (!currentUserPeerId) {
+        alert('⏳ Please wait... Your Peer ID is loading...\n\nTry again in a moment.');
+        return;
+    }
+    
+    let remotePeerId = prompt(`Call ${currentChatUser.displayName}?\n\n📱 Your Peer ID:\n${currentUserPeerId}\n\n📍 Ask them to share their Peer ID and paste it below:`, '');
     
     if (!remotePeerId) {
         alert('Call cancelled');
+        return;
+    }
+    
+    if (remotePeerId.trim() === '') {
+        alert('Please enter their Peer ID');
         return;
     }
     
@@ -1616,6 +1714,44 @@ toggleAudioBtn.addEventListener('click', () => {
 });
 toggleVideoBtn.addEventListener('click', () => {
     toggleVideo();
+});
+// Peer ID Modal Event Listeners
+showPeerIdBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    // Always show current ID (fallback or real)
+    if (currentUserPeerId) {
+        peerIdDisplay.textContent = currentUserPeerId;
+        peerIdDisplay.style.color = '#1e40af'; // Blue color
+    } else {
+        peerIdDisplay.textContent = 'Initializing...';
+        peerIdDisplay.style.color = '#f59e0b'; // Amber color for loading
+    }
+    peerIdModal.classList.remove('hidden');
+    document.getElementById('user-menu').classList.add('hidden');
+});
+closePeerIdModal.addEventListener('click', () => {
+    peerIdModal.classList.add('hidden');
+});
+closePeerIdBtn.addEventListener('click', () => {
+    peerIdModal.classList.add('hidden');
+});
+copyPeerIdBtn.addEventListener('click', () => {
+    if (currentUserPeerId) {
+        navigator.clipboard.writeText(currentUserPeerId).then(() => {
+            const btnText = document.getElementById('copy-btn-text');
+            const originalHTML = copyPeerIdBtn.innerHTML;
+            btnText.textContent = '✅ Copied!';
+            copyPeerIdBtn.style.background = 'linear-gradient(to right, #10b981, #059669)';
+            setTimeout(() => {
+                btnText.textContent = 'Copy to Clipboard';
+                copyPeerIdBtn.style.background = 'linear-gradient(to right, #3b82f6, #2563eb)';
+            }, 2000);
+        }).catch(() => {
+            alert('Failed to copy. Try copying manually: ' + currentUserPeerId);
+        });
+    } else {
+        alert('⏳ Peer ID is still initializing. Please wait a moment and try again.');
+    }
 });
 retryPermissionBtn.addEventListener('click', () => {
     hidePermissionError();
