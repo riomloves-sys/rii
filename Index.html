@@ -7,6 +7,8 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <!-- PeerJS for Voice/Video Calls -->
+    <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <style>
         * { transition: all 0.3s ease; }
         body { font-family: 'Inter', sans-serif; }
@@ -285,6 +287,39 @@
         </div>
     </div>
 </div>
+<!-- Permission Modal Disabled - Using simple alerts instead -->
+<!--
+<div id="permission-modal" class="hidden fixed inset-0 bg-black bg-opacity-80 flex items-center justify-center z-50 p-4">
+    <div class="bg-white rounded-2xl shadow-2xl w-full max-w-md p-8">
+        <h3 class="text-2xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+            <i class="fas fa-lock text-red-500 text-3xl"></i>
+            Permission Required
+        </h3>
+        <p class="text-gray-700 mb-6">
+            To use voice/video calls, you need to grant camera and microphone permissions.
+        </p>
+        <div class="bg-blue-50 border-l-4 border-blue-500 p-4 mb-6 rounded">
+            <p class="font-semibold text-gray-800 mb-3">How to allow permissions:</p>
+            <ol class="text-sm text-gray-700 space-y-2 list-decimal list-inside">
+                <li>A permission popup will appear</li>
+                <li>Click <strong>"Allow"</strong> to grant access</li>
+                <li>If blocked, check your browser settings</li>
+            </ol>
+        </div>
+        <div class="bg-yellow-50 border-l-4 border-yellow-500 p-4 mb-6 rounded">
+            <p class="font-semibold text-gray-800 mb-2">Browser Instructions:</p>
+            <p class="text-sm text-gray-700">
+                <strong>Chrome:</strong> Settings → Privacy → Camera/Microphone<br>
+                <strong>Firefox:</strong> Options → Privacy → Permissions<br>
+                <strong>Safari:</strong> Preferences → Websites → Camera/Microphone
+            </p>
+        </div>
+        <button id="retry-permission-btn" class="w-full bg-blue-500 hover:bg-blue-600 text-white py-3 rounded-lg font-semibold transition">
+            <i class="fas fa-redo mr-2"></i>Retry
+        </button>
+    </div>
+</div>
+-->
 <div id="admin-panel" class="hidden fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-30 p-4">
     <div class="bg-white rounded-2xl shadow-2xl w-full max-w-5xl max-h-[90vh] flex flex-col">
         <div class="flex justify-between items-center p-6 border-b border-gray-200">
@@ -745,6 +780,8 @@ const toggleAudioBtn = document.getElementById('toggle-audio-btn');
 const toggleVideoBtn = document.getElementById('toggle-video-btn');
 const localVideo = document.getElementById('local-video');
 const remoteVideo = document.getElementById('remote-video');
+const permissionModal = document.getElementById('permission-modal');
+// const retryPermissionBtn = document.getElementById('retry-permission-btn'); // Disabled - using simple alerts instead
 let isLogin = true;
 let replyToMessageId = null;
 let mediaRecorder;
@@ -759,6 +796,44 @@ let isCallActive = false;
 let isAudioEnabled = true;
 let isVideoEnabled = true;
 let callType = 'audio'; // 'audio' or 'video'
+let pendingCallType = null;
+
+// Check if running on HTTPS or localhost
+function isSecureContext() {
+    return location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+}
+
+// Check permission status
+async function checkPermissionStatus(mediaType) {
+    try {
+        if (!navigator.permissions || !navigator.permissions.query) {
+            console.log('⚠️ Permissions API not available');
+            return 'unknown';
+        }
+        const result = await navigator.permissions.query({ name: mediaType });
+        console.log(`🔍 ${mediaType} permission status:`, result.state);
+        return result.state; // 'granted', 'denied', 'prompt'
+    } catch (error) {
+        console.warn('Cannot check permission:', error);
+        return 'unknown';
+    }
+}
+
+// Permission Modal Disabled - Using simple alerts instead
+/*
+function showPermissionError() {
+    callModal.classList.add('hidden');
+    permissionModal.classList.remove('hidden');
+}
+
+function hidePermissionError() {
+    permissionModal.classList.add('hidden');
+}
+*/
+
+function hidePermissionError() {
+    // Disabled
+}
 
 // Helper Functions
 function showAuthScreen() {
@@ -775,216 +850,199 @@ function showMainApp() {
     chatWindowWrapper.classList.add('hidden');
 }
 
-// WebRTC Call Functions
+// ==================== PeerJS CALL SYSTEM ====================
+// Initialize PeerJS
+let peer = null;
+let currentCall = null;
+let currentUserPeerId = null;
+
+function initializePeer() {
+    if (peer) return;
+    const peerId = 'user_' + currentUser.uid.substring(0, 10);
+    peer = new Peer(peerId, { 
+        debug: 2,
+        iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' }
+        ]
+    });
+    
+    peer.on('open', function(id) {
+        console.log('✅ PeerJS Ready. Your ID:', id);
+        currentUserPeerId = id;
+        localStorage.setItem('myPeerId', id);
+    });
+    
+    peer.on('call', function(call) {
+        console.log('📞 Incoming call from:', call.peer);
+        handleIncomingCall(call);
+    });
+    
+    peer.on('error', function(error) {
+        console.error('❌ PeerJS Error:', error);
+    });
+}
+
+async function handleIncomingCall(call) {
+    document.getElementById('incoming-caller-name').textContent = currentChatUser?.displayName || call.peer;
+    document.getElementById('incoming-caller-avatar').src = currentChatUser?.photoURL || '';
+    document.getElementById('incoming-call-type').textContent = 'is calling...';
+    incomingCallModal.classList.remove('hidden');
+    currentCall = call;
+    
+    setTimeout(() => {
+        if (!incomingCallModal.classList.contains('hidden')) {
+            rejectCall();
+        }
+    }, 30000);
+}
+
 async function initiateCall(type) {
     if (!currentChatUser || !currentUser) {
         alert('Please select a user to call');
         return;
     }
     
+    if (!peer) initializePeer();
+    
+    let remotePeerId = prompt(`Call ${currentChatUser.displayName}?\n\nAsk them to share their Peer ID:\n\nYour Peer ID to share: ${currentUserPeerId || 'Loading...'}\n\nEnter their Peer ID:`);
+    
+    if (!remotePeerId) {
+        alert('Call cancelled');
+        return;
+    }
+    
     callType = type;
+    document.getElementById('call-user-name').textContent = currentChatUser.displayName;
+    document.getElementById('call-user-avatar').src = currentChatUser.photoURL;
+    document.getElementById('call-status').textContent = 'Requesting permission...';
+    callModal.classList.remove('hidden');
     
     try {
-        document.getElementById('call-user-name').textContent = currentChatUser.displayName;
-        document.getElementById('call-user-avatar').src = currentChatUser.photoURL;
-        document.getElementById('call-status').textContent = 'Requesting permission...';
-        callModal.classList.remove('hidden');
-        
         const constraints = {
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-            },
-            video: type === 'video' ? { 
-                width: { ideal: 1280 }, 
-                height: { ideal: 720 },
-                facingMode: 'user'
-            } : false
+            audio: true,
+            video: type === 'video' ? { width: { ideal: 640 }, height: { ideal: 480 } } : false
         };
         
-        console.log('Requesting media:', constraints);
+        console.log('🔵 Requesting media:', constraints);
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        console.log('Media obtained:', localStream);
+        console.log('✅ Media stream obtained');
         
         localVideo.srcObject = localStream;
         document.getElementById('call-status').textContent = 'Calling...';
-        isCallActive = true;
         
-        const callData = {
-            from: currentUser.uid,
-            fromName: currentUser.displayName,
-            fromPhoto: currentUser.photoURL,
-            to: currentChatUser.uid,
-            type: callType,
-            status: 'ringing',
-            timestamp: serverTimestamp(),
-            initiator: currentUser.uid
-        };
+        console.log('📞 Calling:', remotePeerId);
+        currentCall = peer.call(remotePeerId, localStream);
         
-        const callRef = doc(db, 'calls', currentChatId);
-        await setDoc(callRef, callData);
-        console.log('Call data sent:', currentChatId);
-        
-        let callActive = true;
-        const unsubscribe = onSnapshot(callRef, (docSnap) => {
-            if (docSnap.exists() && callActive) {
-                const callStatus = docSnap.data().status;
-                console.log('Caller sees status:', callStatus);
-                if (callStatus === 'accepted') {
-                    document.getElementById('call-status').textContent = 'Connected';
-                    setupWebRTC();
-                } else if (callStatus === 'rejected') {
-                    callActive = false;
-                    endCall();
-                    alert('Call was rejected');
-                }
-            }
+        currentCall.on('stream', function(remoteStream) {
+            console.log('✅ Received remote stream');
+            remoteVideo.srcObject = remoteStream;
+            document.getElementById('call-status').textContent = 'Connected';
+            document.getElementById('remote-label').textContent = currentChatUser.displayName;
+            isCallActive = true;
         });
         
-        setTimeout(() => {
-            if (isCallActive && callActive) {
-                callActive = false;
-                endCall();
-                alert('Call timeout');
-            }
-        }, 30000);
+        currentCall.on('close', function() {
+            console.log('📞 Call ended');
+            endCall();
+        });
+        
+        currentCall.on('error', function(error) {
+            console.error('❌ Call error:', error);
+            alert('Call failed: ' + error.message);
+            endCall();
+        });
         
     } catch (error) {
-        console.error('Call error:', error);
-        isCallActive = false;
+        console.error('❌ CALL ERROR:', error.name, error.message);
         callModal.classList.add('hidden');
         
-        let msg = 'Could not access camera/microphone';
-        if (error.name === 'NotAllowedError') msg = 'Permission denied - Allow camera/mic access in browser settings';
-        else if (error.name === 'NotFoundError') msg = 'No camera/microphone found';
-        else if (error.name === 'NotReadableError') msg = 'Camera/microphone is in use by another app';
-        
+        let msg = '';
+        if (error.name === 'NotAllowedError') {
+            msg = 'Permission Denied\n\nYou blocked camera/microphone.\n\nAllow in: Browser Settings → Privacy → Camera/Microphone';
+        } else if (error.name === 'NotFoundError') {
+            msg = 'No Device\n\nYour computer does not have a camera/microphone.';
+        } else if (error.name === 'NotReadableError') {
+            msg = 'Device Busy\n\nClose other apps (Zoom, Teams, Discord).';
+        } else if (error.name === 'OverconstrainedError') {
+            msg = 'Device Limitation\n\nTry audio-only call.';
+        } else {
+            msg = 'Error: ' + error.message;
+        }
         alert(msg);
     }
 }
 
-async function receiveCallNotification(callData) {
-    console.log('Incoming call from:', callData.fromName);
-    document.getElementById('incoming-caller-name').textContent = callData.fromName;
-    document.getElementById('incoming-caller-avatar').src = callData.fromPhoto;
-    document.getElementById('incoming-call-type').textContent = `is calling you (${callData.type})...`;
-    incomingCallModal.classList.remove('hidden');
-    callType = callData.type;
-}
-
 async function acceptCall() {
+    if (!currentCall) {
+        alert('No incoming call');
+        return;
+    }
+    
     incomingCallModal.classList.add('hidden');
+    document.getElementById('call-status').textContent = 'Connecting...';
+    callModal.classList.remove('hidden');
     
     try {
-        document.getElementById('call-user-name').textContent = currentChatUser.displayName;
-        document.getElementById('call-user-avatar').src = currentChatUser.photoURL;
-        document.getElementById('call-status').textContent = 'Requesting permission...';
-        callModal.classList.remove('hidden');
-        
         const constraints = {
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-            },
-            video: callType === 'video' ? { 
-                width: { ideal: 1280 }, 
-                height: { ideal: 720 },
-                facingMode: 'user'
-            } : false
+            audio: true,
+            video: callType === 'video' ? { width: { ideal: 640 }, height: { ideal: 480 } } : false
         };
         
-        console.log('Accepting call, requesting media:', constraints);
+        console.log('🔵 Requesting media for accept:', constraints);
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        console.log('Media obtained on accept:', localStream);
+        console.log('✅ Media stream obtained');
+        
         localVideo.srcObject = localStream;
         
-        document.getElementById('call-status').textContent = 'Connected';
+        currentCall.answer(localStream);
         
-        const callRef = doc(db, 'calls', currentChatId);
-        await updateDoc(callRef, { status: 'accepted', acceptedAt: serverTimestamp() });
-        console.log('Call accepted');
+        currentCall.on('stream', function(remoteStream) {
+            console.log('✅ Received remote stream');
+            remoteVideo.srcObject = remoteStream;
+            document.getElementById('call-status').textContent = 'Connected';
+            document.getElementById('remote-label').textContent = currentChatUser.displayName;
+            isCallActive = true;
+        });
         
-        isCallActive = true;
-        setupWebRTC();
+        currentCall.on('close', function() {
+            console.log('📞 Call ended');
+            endCall();
+        });
+        
+        currentCall.on('error', function(error) {
+            console.error('❌ Call error:', error);
+            alert('Call failed: ' + error.message);
+            endCall();
+        });
+        
     } catch (error) {
-        console.error('Accept call error:', error);
+        console.error('❌ ACCEPT CALL ERROR:', error.name, error.message);
+        incomingCallModal.classList.add('hidden');
         callModal.classList.add('hidden');
         
-        let msg = 'Could not accept call';
-        if (error.name === 'NotAllowedError') msg = 'Permission denied - Allow camera/mic access';
-        else if (error.name === 'NotFoundError') msg = 'No camera/microphone found';
-        else if (error.name === 'NotReadableError') msg = 'Camera/microphone is in use by another app';
-        
+        let msg = '';
+        if (error.name === 'NotAllowedError') {
+            msg = 'Permission Denied\n\nAllow in: Browser Settings → Privacy → Camera/Microphone';
+        } else if (error.name === 'NotFoundError') {
+            msg = 'No Device\n\nYour computer does not have a camera/microphone.';
+        } else if (error.name === 'NotReadableError') {
+            msg = 'Device Busy\n\nClose other apps using camera/mic.';
+        } else if (error.name === 'OverconstrainedError') {
+            msg = 'Device Limitation\n\nTry audio-only call.';
+        } else {
+            msg = 'Error: ' + error.message;
+        }
         alert(msg);
     }
 }
 
 function rejectCall() {
-    const callRef = doc(db, 'calls', currentChatId);
-    updateDoc(callRef, { status: 'rejected' }).catch(console.error);
+    if (currentCall) {
+        currentCall.close();
+        currentCall = null;
+    }
     incomingCallModal.classList.add('hidden');
-}
-
-async function setupWebRTC() {
-    const configuration = {
-        iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' }
-        ]
-    };
-    
-    peerConnection = new RTCPeerConnection(configuration);
-    
-    localStream.getTracks().forEach(track => {
-        peerConnection.addTrack(track, localStream);
-    });
-    
-    peerConnection.ontrack = (event) => {
-        remoteVideo.srcObject = event.streams[0];
-        document.getElementById('remote-label').textContent = currentChatUser.displayName;
-    };
-    
-    peerConnection.onicecandidate = (event) => {
-        if (event.candidate) {
-            const candidateRef = collection(db, 'calls', currentChatId, 'candidates');
-            addDoc(candidateRef, { candidate: event.candidate.toJSON(), type: 'local' });
-        }
-    };
-    
-    if (currentUser.uid < currentChatUser.uid) {
-        const offer = await peerConnection.createOffer();
-        await peerConnection.setLocalDescription(offer);
-        const callRef = doc(db, 'calls', currentChatId);
-        await updateDoc(callRef, { offer: offer.toJSON() });
-    }
-    
-    const callRef = doc(db, 'calls', currentChatId);
-    const candidatesRef = collection(db, 'calls', currentChatId, 'candidates');
-    
-    onSnapshot(callRef, async (docSnap) => {
-        const data = docSnap.data();
-        if (data?.answer && !peerConnection.remoteDescription) {
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-        }
-    });
-    
-    onSnapshot(candidatesRef, (snapshot) => {
-        snapshot.docChanges().forEach((change) => {
-            if (change.type === 'added') {
-                const candidate = new RTCIceCandidate(change.doc.data().candidate);
-                peerConnection.addIceCandidate(candidate).catch(console.error);
-            }
-        });
-    });
-    
-    if (currentUser.uid > currentChatUser.uid) {
-        const answer = await peerConnection.createAnswer();
-        await peerConnection.setLocalDescription(answer);
-        const callRef = doc(db, 'calls', currentChatId);
-        await updateDoc(callRef, { answer: answer.toJSON() });
-    }
 }
 
 function toggleAudio() {
@@ -1015,16 +1073,9 @@ async function endCall() {
         localStream = null;
     }
     
-    if (peerConnection) {
-        peerConnection.close();
-        peerConnection = null;
-    }
-    
-    try {
-        const callRef = doc(db, 'calls', currentChatId);
-        await updateDoc(callRef, { status: 'ended' });
-    } catch (error) {
-        console.error('Error ending call:', error);
+    if (currentCall) {
+        currentCall.close();
+        currentCall = null;
     }
     
     callModal.classList.add('hidden');
@@ -1032,9 +1083,12 @@ async function endCall() {
     
     localVideo.srcObject = null;
     remoteVideo.srcObject = null;
+    document.getElementById('call-status').textContent = 'Calling...';
     document.getElementById('remote-label').textContent = 'Connecting...';
     toggleAudioBtn.classList.remove('opacity-50');
     toggleVideoBtn.classList.remove('opacity-50');
+    isAudioEnabled = true;
+    isVideoEnabled = true;
 }
 
 // NEW ADMIN PANEL LOGIC
@@ -1417,6 +1471,7 @@ function loadUI() {
     loadUserList();
     showMainApp();
     initEmojiStickerPicker();
+    initializePeer(); // Initialize PeerJS for calling
     chatListContainer.classList.remove('hidden');
 }
 authToggleLink.addEventListener('click', (e) => {
@@ -1561,6 +1616,13 @@ toggleAudioBtn.addEventListener('click', () => {
 });
 toggleVideoBtn.addEventListener('click', () => {
     toggleVideo();
+});
+retryPermissionBtn.addEventListener('click', () => {
+    hidePermissionError();
+    if (pendingCallType) {
+        console.log('Retrying call with type:', pendingCallType);
+        initiateCall(pendingCallType);
+    }
 });
 giphyBtn.addEventListener('click', () => {
     giphyModal.style.display = 'flex';
