@@ -906,9 +906,19 @@ function generateFallbackPeerId() {
 function initializePeer() {
     if (peer || currentUserPeerId) return; // Already initialized
     
+    if (!currentUser || !currentUser.uid) {
+        console.warn('⚠️ User not logged in yet, skipping PeerJS initialization');
+        return;
+    }
+    
     const peerId = 'user_' + currentUser.uid.substring(0, 10);
     
     try {
+        // Check if Peer class exists
+        if (typeof Peer === 'undefined') {
+            throw new Error('PeerJS library not loaded');
+        }
+        
         peer = new Peer(peerId, { 
             debug: 0, // Reduced debug output
             iceServers: [
@@ -917,30 +927,38 @@ function initializePeer() {
             ]
         });
         
-        peer.on('open', function(id) {
-            console.log('✅ PeerJS Ready. Your ID:', id);
-            currentUserPeerId = id;
-            localStorage.setItem('myPeerId', id);
-            peerIdDisplay.textContent = id;
-            updatePeerIdInUI();
-        });
+        // Safety check - verify peer was created
+        if (!peer) {
+            throw new Error('Peer object creation failed');
+        }
         
-        peer.on('call', function(call) {
-            console.log('📞 Incoming call from:', call.peer);
-            handleIncomingCall(call);
-        });
-        
-        peer.on('error', function(error) {
-            console.error('❌ PeerJS Error:', error);
-            // Use fallback ID if PeerJS fails
-            if (!currentUserPeerId) {
-                currentUserPeerId = generateFallbackPeerId();
-                localStorage.setItem('myPeerId', currentUserPeerId);
-                peerIdDisplay.textContent = currentUserPeerId;
+        // Only attach listeners if peer is valid
+        if (typeof peer.on === 'function') {
+            peer.on('open', function(id) {
+                console.log('✅ PeerJS Ready. Your ID:', id);
+                currentUserPeerId = id;
+                localStorage.setItem('myPeerId', id);
+                if (peerIdDisplay) peerIdDisplay.textContent = id;
                 updatePeerIdInUI();
-                console.log('⚠️ Using fallback Peer ID:', currentUserPeerId);
-            }
-        });
+            });
+            
+            peer.on('call', function(call) {
+                console.log('📞 Incoming call from:', call.peer);
+                handleIncomingCall(call);
+            });
+            
+            peer.on('error', function(error) {
+                console.error('❌ PeerJS Error:', error);
+                // Use fallback ID if PeerJS fails
+                if (!currentUserPeerId) {
+                    currentUserPeerId = generateFallbackPeerId();
+                    localStorage.setItem('myPeerId', currentUserPeerId);
+                    if (peerIdDisplay) peerIdDisplay.textContent = currentUserPeerId;
+                    updatePeerIdInUI();
+                    console.log('⚠️ Using fallback Peer ID:', currentUserPeerId);
+                }
+            });
+        }
         
         // Set a timeout to use fallback if PeerJS doesn't connect
         setTimeout(() => {
@@ -948,23 +966,25 @@ function initializePeer() {
                 console.warn('⚠️ PeerJS taking too long, using fallback ID');
                 currentUserPeerId = generateFallbackPeerId();
                 localStorage.setItem('myPeerId', currentUserPeerId);
-                peerIdDisplay.textContent = currentUserPeerId;
+                if (peerIdDisplay) peerIdDisplay.textContent = currentUserPeerId;
                 updatePeerIdInUI();
             }
         }, 3000);
         
     } catch (error) {
         console.error('❌ Failed to initialize PeerJS:', error);
+        console.log('💡 Switching to fallback Peer ID generation');
         currentUserPeerId = generateFallbackPeerId();
         localStorage.setItem('myPeerId', currentUserPeerId);
-        peerIdDisplay.textContent = currentUserPeerId;
+        if (peerIdDisplay) peerIdDisplay.textContent = currentUserPeerId;
         updatePeerIdInUI();
+        peer = null; // Clear invalid peer reference
     }
 }
 
 function updatePeerIdInUI() {
     // Display peer ID in multiple places
-    if (currentUserPeerId) {
+    if (currentUserPeerId && peerIdDisplay) {
         peerIdDisplay.textContent = currentUserPeerId;
         console.log('🆔 Your Peer ID:', currentUserPeerId);
     }
@@ -990,11 +1010,21 @@ async function initiateCall(type) {
         return;
     }
     
-    if (!peer) initializePeer();
+    if (!peer) {
+        initializePeer();
+        // Give PeerJS a moment to initialize
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
     
     // Wait for peer ID to be ready
     if (!currentUserPeerId) {
         alert('⏳ Please wait... Your Peer ID is loading...\n\nTry again in a moment.');
+        return;
+    }
+    
+    // Safety check - make sure peer was initialized
+    if (!peer && !currentUserPeerId) {
+        alert('❌ Unable to initialize call system. Please refresh and try again.');
         return;
     }
     
@@ -1029,8 +1059,17 @@ async function initiateCall(type) {
         localVideo.srcObject = localStream;
         document.getElementById('call-status').textContent = 'Calling...';
         
+        // Safety check before calling
+        if (!peer) {
+            throw new Error('PeerJS not initialized. Using fallback only.');
+        }
+        
         console.log('📞 Calling:', remotePeerId);
         currentCall = peer.call(remotePeerId, localStream);
+        
+        if (!currentCall) {
+            throw new Error('Failed to create call');
+        }
         
         currentCall.on('stream', function(remoteStream) {
             console.log('✅ Received remote stream');
