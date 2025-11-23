@@ -919,18 +919,22 @@ function initializePeer() {
             throw new Error('PeerJS library not loaded');
         }
         
-        peer = new Peer(peerId, { 
-            debug: 0, // Reduced debug output
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
-            ]
-        });
+        // Use PeerJS cloud server (default) or custom config
+        const peerConfig = {
+            debug: 1, // More debug info to diagnose issues
+            // Don't set iceServers - let PeerJS use defaults
+            // The custom iceServers config was causing issues
+        };
+        
+        console.log('🔌 Initializing PeerJS with ID:', peerId);
+        peer = new Peer(peerId, peerConfig);
         
         // Safety check - verify peer was created
         if (!peer) {
             throw new Error('Peer object creation failed');
         }
+        
+        console.log('📡 Peer object created, waiting for connection...');
         
         // Only attach listeners if peer is valid
         if (typeof peer.on === 'function') {
@@ -948,7 +952,7 @@ function initializePeer() {
             });
             
             peer.on('error', function(error) {
-                console.error('❌ PeerJS Error:', error);
+                console.error('❌ PeerJS Error:', error.type, error.message);
                 // Use fallback ID if PeerJS fails
                 if (!currentUserPeerId) {
                     currentUserPeerId = generateFallbackPeerId();
@@ -957,6 +961,15 @@ function initializePeer() {
                     updatePeerIdInUI();
                     console.log('⚠️ Using fallback Peer ID:', currentUserPeerId);
                 }
+            });
+            
+            peer.on('disconnected', function() {
+                console.warn('⚠️ Peer disconnected from signaling server');
+            });
+            
+            peer.on('close', function() {
+                console.warn('⚠️ Peer connection closed');
+                peer = null;
             });
         }
         
@@ -989,6 +1002,72 @@ function updatePeerIdInUI() {
         console.log('🆔 Your Peer ID:', currentUserPeerId);
     }
 }
+
+// Diagnostic function for troubleshooting (type in console: diagnose())
+window.diagnose = function() {
+    console.clear();
+    console.log('%c=== CALL SYSTEM DIAGNOSTICS ===', 'color: blue; font-size: 14px; font-weight: bold;');
+    console.log('Timestamp:', new Date().toISOString());
+    console.log('');
+    
+    console.log('%cUSER & AUTH:', 'color: green; font-weight: bold;');
+    console.log('Logged In:', !!currentUser);
+    console.log('User Email:', currentUser?.email || 'NOT LOGGED IN');
+    console.log('User UID:', currentUser?.uid?.substring(0, 10) + '...' || 'NONE');
+    console.log('');
+    
+    console.log('%cPEER ID SYSTEM:', 'color: green; font-weight: bold;');
+    console.log('Current Peer ID:', currentUserPeerId || 'NOT SET');
+    console.log('Cached Peer ID (localStorage):', localStorage.getItem('myPeerId') || 'NONE');
+    console.log('');
+    
+    console.log('%cPEERJS CONNECTION:', 'color: orange; font-weight: bold;');
+    console.log('PeerJS Library Loaded:', typeof Peer === 'function' ? '✅ YES' : '❌ NO');
+    console.log('Peer Object Exists:', !!peer ? '✅ YES' : '❌ NO');
+    if (peer) {
+        console.log('Peer ID:', peer.id || 'UNKNOWN');
+        console.log('Peer Open:', peer.open ? '✅ YES' : '❌ NO');
+        console.log('Peer Destroyed:', peer.destroyed ? '❌ YES (BAD)' : '✅ NO');
+        console.log('Signaling State:', peer.peerConnection?.signalingState || 'UNKNOWN');
+        console.log('Connection State:', peer.peerConnection?.connectionState || 'UNKNOWN');
+        console.log('ICE Connection State:', peer.peerConnection?.iceConnectionState || 'UNKNOWN');
+    } else {
+        console.log('⚠️ Peer object not created yet');
+    }
+    console.log('');
+    
+    console.log('%cMEDIA STREAMS:', 'color: orange; font-weight: bold;');
+    console.log('Local Stream Active:', !!localStream ? '✅ YES' : '❌ NO');
+    if (localStream) {
+        console.log('Audio Tracks:', localStream.getAudioTracks().length);
+        console.log('Video Tracks:', localStream.getVideoTracks().length);
+        localStream.getTracks().forEach((track, i) => {
+            console.log(`  Track ${i}:`, track.kind, track.enabled ? '✅' : '❌', track.readyState);
+        });
+    }
+    console.log('');
+    
+    console.log('%cCALL STATE:', 'color: orange; font-weight: bold;');
+    console.log('Current Call Exists:', !!currentCall ? '✅ YES' : '❌ NO');
+    console.log('Call Active:', isCallActive ? '✅ YES' : '❌ NO');
+    console.log('');
+    
+    console.log('%cBROWSER INFO:', 'color: purple; font-weight: bold;');
+    console.log('User Agent:', navigator.userAgent);
+    console.log('WebRTC Support:', typeof RTCPeerConnection !== 'undefined' ? '✅ YES' : '❌ NO');
+    console.log('getUserMedia Support:', navigator.mediaDevices?.getUserMedia ? '✅ YES' : '❌ NO');
+    console.log('');
+    
+    console.log('%cQUICK ACTIONS:', 'color: blue; font-weight: bold;');
+    console.log('Initialize PeerJS: initializePeer()');
+    console.log('Test WebRTC: navigator.mediaDevices.enumerateDevices()');
+    console.log('Get Call Info: currentCall?.peerConnection?.getStats()');
+    console.log('');
+    
+    console.log('%c=== END DIAGNOSTICS ===', 'color: blue; font-size: 14px; font-weight: bold;');
+};
+
+console.log('%c✅ Diagnostics ready! Type in console: diagnose()', 'color: green; font-weight: bold;');
 
 async function handleIncomingCall(call) {
     document.getElementById('incoming-caller-name').textContent = currentChatUser?.displayName || call.peer;
@@ -1061,15 +1140,46 @@ async function initiateCall(type) {
         
         // Safety check before calling
         if (!peer) {
-            throw new Error('PeerJS not initialized. Using fallback only.');
+            console.error('❌ PeerJS not initialized');
+            throw new Error('PeerJS not initialized. Please refresh and try again.');
+        }
+        
+        // Verify peer connection is actually open
+        if (!peer.open) {
+            console.warn('⚠️ Peer connection not open yet. Waiting...');
+            document.getElementById('call-status').textContent = 'Establishing connection...';
+            // Wait for peer to be ready
+            await new Promise((resolve) => {
+                const checkInterval = setInterval(() => {
+                    if (peer.open) {
+                        clearInterval(checkInterval);
+                        resolve();
+                    }
+                }, 100);
+                // Timeout after 5 seconds
+                setTimeout(() => {
+                    clearInterval(checkInterval);
+                    resolve();
+                }, 5000);
+            });
         }
         
         console.log('📞 Calling:', remotePeerId);
-        currentCall = peer.call(remotePeerId, localStream);
+        console.log('🔍 Peer info - ID:', peer.id, 'Open:', peer.open);
+        
+        try {
+            currentCall = peer.call(remotePeerId, localStream);
+        } catch (callError) {
+            console.error('❌ peer.call() threw error:', callError);
+            throw new Error('Failed to initiate call: ' + callError.message);
+        }
         
         if (!currentCall) {
-            throw new Error('Failed to create call');
+            console.error('❌ peer.call() returned undefined');
+            throw new Error('Failed to create call - peer.call() returned undefined');
         }
+        
+        console.log('✅ Call object created:', currentCall.peerConnection);
         
         currentCall.on('stream', function(remoteStream) {
             console.log('✅ Received remote stream');
